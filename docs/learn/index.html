@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How Multica Works — an interactive field guide</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%23111827'/%3E%3Cpolygon fill='%23f9fafb' points='45,62.1 45,100 55,100 55,62.1 81.8,88.9 88.9,81.8 62.1,55 100,55 100,45 62.1,45 88.9,18.2 81.8,11.1 55,37.9 55,0 45,0 45,37.9 18.2,11.1 11.1,18.2 37.9,45 0,45 0,55 37.9,55 11.1,81.8 18.2,88.9'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <svg class="mark" viewBox="0 0 100 100" aria-hidden="true"><polygon fill="currentColor" points="45,62.1 45,100 55,100 55,62.1 81.8,88.9 88.9,81.8 62.1,55 100,55 100,45 62.1,45 88.9,18.2 81.8,11.1 55,37.9 55,0 45,0 45,37.9 18.2,11.1 11.1,18.2 37.9,45 0,45 0,55 37.9,55 11.1,81.8 18.2,88.9"/></svg>
+  <div>
+    <h1>How Multica Works</h1>
+    <p class="subtitle">An interactive field guide to the architecture — built from the actual source code</p>
+  </div>
+  <span class="progress-pill" id="progress-pill">0 / 8 read</span>
+</header>
+
+<div class="shell">
+<nav class="sidenav" id="sidenav" aria-label="Chapters">
+  <a href="#ch1" data-ch="ch1"><span class="dot"></span>1 · What is Multica?</a>
+  <a href="#ch2" data-ch="ch2"><span class="dot"></span>2 · The Vocabulary</a>
+  <a href="#ch3" data-ch="ch3"><span class="dot"></span>3 · The Three Machines</a>
+  <a href="#ch4" data-ch="ch4"><span class="dot"></span>4 · Follow an Issue</a>
+  <a href="#ch5" data-ch="ch5"><span class="dot"></span>5 · State &amp; Realtime</a>
+  <a href="#ch6" data-ch="ch6"><span class="dot"></span>6 · The Daemon Up Close</a>
+  <a href="#ch7" data-ch="ch7"><span class="dot"></span>7 · Waking the Agents</a>
+  <a href="#ch8" data-ch="ch8"><span class="dot"></span>8 · Capstone Quiz</a>
+</nav>
+
+<main class="content">
+
+<!-- ============ CHAPTER 1 ============ -->
+<section id="ch1" class="chapter">
+  <p class="kicker">Chapter 1</p>
+  <h2>What is Multica?</h2>
+  <p class="lede">Multica is a task management platform — like Linear — with one structural difference that ripples through the entire codebase: <strong>AI agents are first-class teammates</strong>, not a bolted-on chatbot.</p>
+  <p>In a traditional tracker, the assignee of an issue is always a person. In Multica, the assignee is <em>polymorphic</em>: a person, an AI agent, or a whole squad of agents. Assign an issue to an agent and it doesn't just sit there — a real coding tool wakes up on a real machine, does the work in an isolated git worktree, and reports back in the issue's comment thread like any colleague would.</p>
+  <p>Toggle the board below to see what that one design decision changes:</p>
+
+  <div class="widget" id="kanban-widget">
+    <div class="toggle-row" role="tablist">
+      <button class="toggle-btn active" data-mode="traditional" role="tab">Traditional tracker</button>
+      <button class="toggle-btn" data-mode="multica" role="tab">Multica</button>
+    </div>
+    <div class="kanban" id="kanban-board"></div>
+    <p class="widget-note" id="kanban-note">Humans assign, humans execute, humans update statuses. The tool is a shared to-do list.</p>
+  </div>
+
+  <div class="aside">
+    <p><strong>Architect's note.</strong> "Agents as teammates" is not a UI skin. It forces: a polymorphic <code>assignee_type + assignee_id</code> on issues, a task queue between the server and the machines that run agents, a daemon that executes work <em>on your hardware</em>, and a realtime layer so everyone watches the agent work live. Each of the next chapters is one of those consequences.</p>
+  </div>
+</section>
+
+<!-- ============ CHAPTER 2 ============ -->
+<section id="ch2" class="chapter">
+  <p class="kicker">Chapter 2</p>
+  <h2>The Vocabulary</h2>
+  <p class="lede">Ten nouns explain the whole system. Click any node — the panel explains it and highlights what it connects to. The purple edges are the polymorphic assignee, the single most important relation in the schema.</p>
+
+  <div class="widget entity-widget">
+    <svg id="entity-map" viewBox="0 0 760 430" role="img" aria-label="Multica entity relationship map">
+      <rect x="8" y="8" width="744" height="414" rx="14" class="ws-boundary"/>
+      <text x="26" y="34" class="ws-label">WORKSPACE — the tenant boundary. Every query filters by workspace_id.</text>
+      <!-- edges (drawn first, under nodes) -->
+      <g id="edges">
+        <line data-edge="member-issue"    class="edge assignee" x1="150" y1="105" x2="330" y2="185"/>
+        <line data-edge="agent-issue"     class="edge assignee" x1="380" y1="98"  x2="380" y2="168"/>
+        <line data-edge="squad-issue"     class="edge assignee" x1="600" y1="105" x2="432" y2="185"/>
+        <line data-edge="squad-agent"     class="edge" x1="555" y1="85"  x2="438" y2="80"/>
+        <line data-edge="issue-task"      class="edge" x1="380" y1="215" x2="380" y2="295"/>
+        <line data-edge="agent-task"      class="edge" x1="330" y1="92"  x2="240" y2="300"/>
+        <line data-edge="runtime-task"    class="edge" x1="555" y1="330" x2="438" y2="322"/>
+        <line data-edge="agent-runtime"   class="edge" x1="438" y1="90"  x2="600" y2="300"/>
+        <line data-edge="skill-agent"     class="edge" x1="150" y1="330" x2="328" y2="95"/>
+        <line data-edge="autopilot-issue" class="edge" x1="610" y1="205" x2="435" y2="198"/>
+        <line data-edge="project-issue"   class="edge" x1="155" y1="205" x2="325" y2="198"/>
+      </g>
+      <!-- nodes -->
+      <g class="ent" data-ent="member"    transform="translate(60,70)"><rect width="90" height="36" rx="8"/><text x="45" y="23">Member</text></g>
+      <g class="ent agent-ent" data-ent="agent" transform="translate(330,62)"><rect width="108" height="36" rx="8"/><text x="54" y="23">Agent ✳</text></g>
+      <g class="ent" data-ent="squad"     transform="translate(555,70)"><rect width="90" height="36" rx="8"/><text x="45" y="23">Squad</text></g>
+      <g class="ent issue-ent" data-ent="issue" transform="translate(325,170)"><rect width="110" height="44" rx="10"/><text x="55" y="27">Issue</text></g>
+      <g class="ent" data-ent="project"   transform="translate(60,188)"><rect width="95" height="36" rx="8"/><text x="47" y="23">Project</text></g>
+      <g class="ent" data-ent="autopilot" transform="translate(610,188)"><rect width="100" height="36" rx="8"/><text x="50" y="23">Autopilot</text></g>
+      <g class="ent" data-ent="skill"     transform="translate(60,312)"><rect width="90" height="36" rx="8"/><text x="45" y="23">Skill</text></g>
+      <g class="ent" data-ent="task"      transform="translate(325,295)"><rect width="110" height="44" rx="10"/><text x="55" y="27">Task</text></g>
+      <g class="ent" data-ent="runtime"   transform="translate(555,312)"><rect width="100" height="36" rx="8"/><text x="50" y="23">Runtime</text></g>
+    </svg>
+    <div class="entity-card" id="entity-card">
+      <p class="card-hint">← Click an entity to learn what it is.</p>
+    </div>
+  </div>
+
+  <p>Two more nouns live outside the diagram: the <strong>Inbox</strong> (per-user notification feed driven by issue subscriptions) and <strong>Chat</strong> (direct conversation sessions with an agent, outside any issue). Both ride the same task and realtime machinery you'll meet in chapters 4–5.</p>
+
+  <div class="quiz" data-quiz="vocab"></div>
+</section>
+
+<!-- ============ CHAPTER 3 ============ -->
+<section id="ch3" class="chapter">
+  <p class="kicker">Chapter 3</p>
+  <h2>The Three Machines</h2>
+  <p class="lede">Multica is three cooperating programs in three different places. Click each machine to open it up.</p>
+
+  <div class="widget">
+    <div class="machines" id="machines">
+      <button class="machine" data-machine="frontend">
+        <h3>Frontends</h3>
+        <p class="m-where">runs in your browser / Electron / phone</p>
+        <p class="m-what">Next.js web · Electron desktop · Expo mobile</p>
+      </button>
+      <div class="machine-link"><span>REST + WebSocket</span><span class="arrows">⇄</span></div>
+      <button class="machine" data-machine="server">
+        <h3>Go Server</h3>
+        <p class="m-where">runs in the cloud (or self-hosted)</p>
+        <p class="m-what">Chi router · services · sqlc/Postgres · WS hub</p>
+      </button>
+      <div class="machine-link"><span>HTTPS poll + claim<br><em>daemon dials out — no inbound ports</em></span><span class="arrows">⇄</span></div>
+      <button class="machine" data-machine="daemon">
+        <h3>Daemon</h3>
+        <p class="m-where">runs on YOUR machine</p>
+        <p class="m-what">poller · git worktrees · execenv · 12 coding tools</p>
+      </button>
+    </div>
+    <div class="machine-detail" id="machine-detail">
+      <p class="card-hint">← Click a machine to see inside it.</p>
+    </div>
+  </div>
+
+  <div class="aside">
+    <p><strong>Why a daemon at all?</strong> Agents run real coding tools (Claude Code, Codex, …) that need your repos, your credentials, your toolchain. Multica keeps execution <em>local-first</em>: the server only coordinates; code and secrets never need to leave your machine. The daemon polls outward over HTTPS, so it works behind any firewall with zero network setup.</p>
+  </div>
+</section>
+
+<!-- ============ CHAPTER 4 ============ -->
+<section id="ch4" class="chapter">
+  <p class="kicker">Chapter 4 · The centerpiece</p>
+  <h2>Follow an Issue</h2>
+  <p class="lede">This is the whole product in one trace: <strong>you assign issue MUL-123 to the agent <code>db-boy</code></strong> — what happens, step by step, with the real file and line for every hop. Use the buttons or your ← → keys.</p>
+
+  <div class="widget seq-widget">
+    <div class="lanes" id="seq-lanes">
+      <div class="lane" data-lane="0"><span>🖥 Browser</span></div>
+      <div class="lane" data-lane="1"><span>🌐 Go Server</span></div>
+      <div class="lane" data-lane="2"><span>🗄 Postgres</span></div>
+      <div class="lane" data-lane="3"><span>🤖 Daemon</span></div>
+    </div>
+    <div class="seq-stage" id="seq-stage">
+      <div class="seq-arrow" id="seq-arrow"><span class="packet"></span></div>
+    </div>
+    <div class="seq-card" id="seq-card"></div>
+    <div class="seq-controls">
+      <button id="seq-prev" class="btn">← Back</button>
+      <div class="seq-ticks" id="seq-ticks"></div>
+      <button id="seq-next" class="btn primary">Next →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CHAPTER 5 ============ -->
+<section id="ch5" class="chapter">
+  <p class="kicker">Chapter 5</p>
+  <h2>State &amp; Realtime</h2>
+  <p class="lede">The frontend stays coherent across three apps and N tabs because of one strict rule: <strong>every piece of state has exactly one owner.</strong></p>
+
+  <div class="twocol">
+    <div class="col-card">
+      <h3>Server state → TanStack Query</h3>
+      <p>Issues, agents, workspaces, inbox — anything fetched from the API lives in the Query cache, keyed by <code>wsId</code>. Switching workspace changes the key, so the right data appears with zero manual invalidation.</p>
+      <p class="fileref">packages/core/issues/queries.ts · packages/core/api/client.ts:258 (<code>ApiClient</code> — every request flows through <code>newRequest()</code>, the most connected function in the codebase: 452 graph edges)</p>
+    </div>
+    <div class="col-card">
+      <h3>Client state → Zustand</h3>
+      <p>Selections, filters, drafts, modal state. Stores live in <code>packages/core/</code> so web and desktop share them. Server data is <em>never</em> copied into a store — two sources of truth always drift.</p>
+      <p class="fileref">packages/core/platform/core-provider.tsx (wires API client, auth/workspace stores, WS, QueryClient)</p>
+    </div>
+  </div>
+
+  <h3 class="subhead">An optimistic mutation, frame by frame</h3>
+  <p>Multica never makes you wait for the server. Step through what happens when you change an issue's status:</p>
+  <div class="widget" id="optimistic-widget">
+    <div class="opt-track" id="opt-track"></div>
+    <div class="opt-card" id="opt-card"></div>
+    <div class="seq-controls">
+      <button id="opt-prev" class="btn">← Back</button>
+      <button id="opt-next" class="btn primary">Next →</button>
+    </div>
+  </div>
+
+  <h3 class="subhead">WebSocket events invalidate — they never write</h3>
+  <p>When anything changes server-side, the WS hub broadcasts an event like <code>issue:updated</code> or <code>task:completed</code>. The handler in <code>packages/core/realtime/use-realtime-sync.ts</code> does <em>not</em> patch stores with the payload. It marks the matching Query caches stale (debounced 100&nbsp;ms per event prefix) and lets them refetch — the cache stays the single source of truth, and a dropped or replayed event can never corrupt state. On reconnect, <em>every</em> workspace-scoped cache is invalidated to recover whatever was missed (<code>use-realtime-sync.ts:297</code>).</p>
+  <div class="aside"><p><strong>One deliberate exception.</strong> <code>task:message</code> — the per-token stream while an agent is thinking — is written directly into its cache with <code>setQueryData</code>. Invalidating on every streamed message would flood the network with refetches. Exceptions are fine when they're chosen, named, and commented.</p></div>
+</section>
+
+<!-- ============ CHAPTER 6 ============ -->
+<section id="ch6" class="chapter">
+  <p class="kicker">Chapter 6</p>
+  <h2>The Daemon Up Close</h2>
+  <p class="lede">The daemon is the bridge between "assignee: db-boy" in a database row and an actual CLI process editing files on your Mac.</p>
+
+  <h3 class="subhead">Liveness: the heartbeat contract</h3>
+  <div class="widget">
+    <div class="hb-timeline" id="hb-timeline"></div>
+    <p class="widget-note">Heartbeats ride the WebSocket; an HTTP fallback fires at 2× the interval so one dropped ack never flips you offline (<code>server/internal/daemon/daemon.go:545</code>). The server's 45s sweep marks silent runtimes offline; after 7 days they're pruned. A crashed daemon's tasks are rescued by <code>runtime_recovery</code> plus a 30s server-side scan.</p>
+  </div>
+
+  <h3 class="subhead">Throughput: two concurrency gates</h3>
+  <p>Tasks queue up; the daemon claims only what fits through <em>both</em> gates: <strong>20 concurrent tasks per daemon</strong> (machine protection, <code>MaxConcurrentTasks</code>) and <strong>6 per agent</strong> (a single runaway agent can't starve its teammates). Per-runtime pollers start at staggered offsets so a fleet of daemons doesn't stampede the server (<code>daemon.go:1991</code>).</p>
+
+  <h3 class="subhead">Isolation: every task gets a fresh worktree</h3>
+  <p>The daemon keeps one bare clone per repo (<code>repocache/cache.go:68</code>) and spawns a <em>git worktree</em> per task (<code>cache.go:397</code>). Two agents editing the same repo never touch each other's files; cleanup is instant; the bare clone makes the 2nd…Nth checkout nearly free.</p>
+
+  <h3 class="subhead">The 12 coding tools</h3>
+  <p>An agent is bound to a <em>runtime</em> = daemon × tool × workspace. Any of these tools can be the executor — the daemon adapts skills, sessions, and MCP config per tool (<code>server/pkg/agent/</code>):</p>
+  <div class="widget"><table class="ptable" id="provider-table"></table>
+  <p class="widget-note">Source: <code>apps/docs/content/docs/providers.mdx</code>. "Resume" = the tool can continue a previous session, so a follow-up comment keeps the agent's context.</p></div>
+</section>
+
+<!-- ============ CHAPTER 7 ============ -->
+<section id="ch7" class="chapter">
+  <p class="kicker">Chapter 7</p>
+  <h2>Waking the Agents</h2>
+  <p class="lede">Every path into agent work converges on the same task queue from chapter 4. There are five doors in:</p>
+
+  <div class="widget">
+    <div class="trigger-tabs" id="trigger-tabs"></div>
+    <div class="trigger-detail" id="trigger-detail"></div>
+  </div>
+
+  <h3 class="subhead">The issue status workflow</h3>
+  <div class="widget">
+    <div class="status-flow" id="status-flow"></div>
+    <p class="widget-note"><strong>Backlog is a parking lot:</strong> assigning an agent to a backlog issue deliberately does <em>not</em> enqueue work (<code>service/issue.go:404</code>) — you can pre-assign without triggering execution. Merging a linked GitHub PR moves the issue to Done, but a cancelled issue is never overridden.</p>
+  </div>
+</section>
+
+<!-- ============ CHAPTER 8 ============ -->
+<section id="ch8" class="chapter">
+  <p class="kicker">Chapter 8</p>
+  <h2>Capstone Quiz</h2>
+  <p class="lede">Eight chapters in one trace: a human and an agent, side by side. Prove it stuck.</p>
+  <div class="quiz" data-quiz="capstone"></div>
+  <div class="finale" id="finale" hidden>
+    <svg class="mark big" viewBox="0 0 100 100" aria-hidden="true"><polygon fill="currentColor" points="45,62.1 45,100 55,100 55,62.1 81.8,88.9 88.9,81.8 62.1,55 100,55 100,45 62.1,45 88.9,18.2 81.8,11.1 55,37.9 55,0 45,0 45,37.9 18.2,11.1 11.1,18.2 37.9,45 0,45 0,55 37.9,55 11.1,81.8 18.2,88.9"/></svg>
+    <p>You now know how Multica works. Next stop: <code>server/internal/daemon/daemon.go</code> — read <code>pollLoop()</code> with fresh eyes.</p>
+  </div>
+</section>
+
+<footer class="foot">
+  <p>Generated from the Multica source tree · file references are <code>path:line</code> at the time of writing and may drift · open <code>graphify-out/graph.html</code> for the full knowledge graph.</p>
+</footer>
+</main>
+</div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
