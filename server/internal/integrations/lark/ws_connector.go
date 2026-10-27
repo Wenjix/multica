@@ -11,55 +11,17 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// WSLongConnConnector is the production EventConnector that holds the
-// Lark long-conn WebSocket open, decodes the binary Frame envelope
-// the open-platform server pushes, and forwards normalized inbound
-// events to the Hub's Dispatcher.
+// WSLongConnConnector bootstraps and maintains the Lark WebSocket connection.
+// Use the returned service ID and application-level ping interval, not WebSocket
+// protocol PING frames. Data acknowledgements preserve inbound headers and report
+// dispatcher success or retryable failure.
 //
-// Protocol layer (aligned with `larksuite/oapi-sdk-go/v3/ws`):
-//
-//  1. EndpointFetcher does the POST /callback/ws/endpoint bootstrap.
-//     Lark returns a single-use wss URL with `device_id` + `service_id`
-//     query parameters acting as the credential. The `service_id` is
-//     extracted and used as Frame.Service on every outbound frame.
-//  2. Every WebSocket frame is a binary protobuf Frame. JSON envelopes
-//     are wrapped inside Frame.Payload for data events; control,
-//     ping, pong, ack frames are pure-binary.
-//  3. The client emits an app-layer ping frame (NewPingFrame) on the
-//     PingInterval the server returned in the bootstrap ClientConfig.
-//     WebSocket protocol-level PING is NOT used — Lark's server
-//     ignores it. The server can also push pings at any time; we
-//     reply with NewPongFrame.
-//  4. Every data frame requires an ACK back. The ACK reuses the
-//     inbound frame's Headers verbatim (Lark correlates by
-//     message_id) and writes a JSON Response{code:200, ...} as the
-//     Payload. We send ACK 200 on successful Dispatcher emit, 500
-//     when the Dispatcher reported an infra failure so Lark retries.
-//
-// Ownership of the §4.4 invariant (ctx cancel breaks blocking read):
-//
-// gorilla/websocket.ReadMessage blocks on the TCP socket and does NOT
-// observe a context. Cancelling our ctx flips ctx.Done but does not
-// touch the read syscall. We bridge ctx → read interrupt with a
-// watchdog goroutine that calls conn.Close once ctx fires;
-// gorilla.Close causes any in-flight Read to return immediately with
-// a "use of closed connection" error. The watchdog also runs on a
-// normal exit (so we never leak a goroutine) and is idempotent
-// because conn.Close is safe to call multiple times. This invariant
-// MUST be preserved by any future protocol change: without it,
-// renewLeaseUntil's cancelRun is meaningless and two replicas can
-// process the same installation during a healthy-but-silent socket.
-//
-// PersonalAgent compatibility risk: the official Feishu docs describe
-// long-conn as "supports 企业自建应用 only". PersonalAgent device-flow
-// apps are not listed as supported. If the bootstrap call returns a
-// structured error from Lark, this connector exits Run with the error
-// wrapped and the Hub's backoff loop logs it on every retry — making
-// the misconfiguration visible. See MUL-2671 review thread for the
-// smoke-test path.
+// ReadMessage does not observe context cancellation. A watchdog closes the socket
+// on cancellation so lease loss interrupts a silent connection before another
+// replica takes ownership. Stop that watchdog on normal exit as well.
+// Bootstrap failures return to the hub's backoff loop with their upstream error.
 type WSLongConnConnector struct {
 	cfg WSConnectorConfig
 }
@@ -188,7 +150,7 @@ func NewWSLongConnConnector(cfg WSConnectorConfig) (*WSLongConnConnector, error)
 // binary Frame envelopes until either the ctx is cancelled or the
 // connection errors, and returns. Nil return = clean exit; non-nil
 // return = connection failed (Hub steps up backoff).
-func (c *WSLongConnConnector) Run(ctx context.Context, inst db.LarkInstallation, emit EventEmitter) error {
+func (c *WSLongConnConnector) Run(ctx context.Context, inst Installation, emit EventEmitter) error {
 	log := c.cfg.Logger.With(
 		"installation_id", uuidString(inst.ID),
 		"app_id", inst.AppID,
@@ -254,6 +216,13 @@ func (c *WSLongConnConnector) Run(ctx context.Context, inst db.LarkInstallation,
 	// when Run returns, which also releases any partial buffers held by
 	// an abandoned event.
 	assembler := newChunkAssembler(c.cfg.ChunkTTL, c.cfg.Now)
+
+	// Event types this session has already reported dropping. An app can
+	// subscribe to events we do not handle (reactions, membership churn)
+	// and a busy chat delivers them continuously, so the log reports each
+	// type once per connection rather than once per frame. Read-loop-local:
+	// no lock, and a reconnect re-reports.
+	reportedDrops := make(map[string]struct{})
 
 	// Ping loop: app-layer binary ping frames at the server's PingInterval.
 	pingDone := make(chan struct{})
@@ -375,6 +344,21 @@ func (c *WSLongConnConnector) Run(ctx context.Context, inst db.LarkInstallation,
 			// Heartbeat / unhandled event type. ACK 200 so the server
 			// stops sending it; the decoder owns the "what we handle"
 			// policy.
+			//
+			// Name the event type once per connection (#8496). This
+			// path writes no audit row either, so an app delivering
+			// only event types we decline otherwise leaves no trace
+			// at all. It says what IS arriving, not that anything is
+			// missing: an app whose events go to a request URL
+			// instead of this socket produces no frames, so it
+			// produces no line here. Heartbeats peek as "" and stay
+			// silent.
+			if eventType := PeekEventType(payload); eventType != "" {
+				if _, reported := reportedDrops[eventType]; !reported {
+					reportedDrops[eventType] = struct{}{}
+					log.Info("lark ws connector: dropping unhandled event type", "event_type", eventType)
+				}
+			}
 			if werr := c.writeFrame(&writeMu, conn, NewAckFrame(frame, true)); werr != nil {
 				log.Warn("lark ws connector: ack-after-drop write failed", "err", werr.Error())
 				return fmt.Errorf("write ack: %w", werr)
@@ -501,19 +485,19 @@ type WSEndpoint struct {
 // the connection. The decoder receives the JSON payload bytes — the
 // outer binary Frame envelope is stripped by the connector.
 type FrameDecoder interface {
-	Decode(payload []byte, inst db.LarkInstallation) (msg InboundMessage, ok bool, err error)
+	Decode(payload []byte, inst Installation) (msg InboundMessage, ok bool, err error)
 }
 
 // CredentialsProvider supplies the plaintext InstallationCredentials a
 // connector needs for its EndpointFetcher call.
 type CredentialsProvider interface {
-	Credentials(ctx context.Context, inst db.LarkInstallation) (InstallationCredentials, error)
+	Credentials(ctx context.Context, inst Installation) (InstallationCredentials, error)
 }
 
 // CredentialsProviderFunc adapts a free function.
-type CredentialsProviderFunc func(ctx context.Context, inst db.LarkInstallation) (InstallationCredentials, error)
+type CredentialsProviderFunc func(ctx context.Context, inst Installation) (InstallationCredentials, error)
 
-func (f CredentialsProviderFunc) Credentials(ctx context.Context, inst db.LarkInstallation) (InstallationCredentials, error) {
+func (f CredentialsProviderFunc) Credentials(ctx context.Context, inst Installation) (InstallationCredentials, error) {
 	return f(ctx, inst)
 }
 
@@ -525,9 +509,9 @@ func (f EndpointFetcherFunc) Endpoint(ctx context.Context, creds InstallationCre
 }
 
 // FrameDecoderFunc adapts a plain function to FrameDecoder.
-type FrameDecoderFunc func(payload []byte, inst db.LarkInstallation) (InboundMessage, bool, error)
+type FrameDecoderFunc func(payload []byte, inst Installation) (InboundMessage, bool, error)
 
-func (f FrameDecoderFunc) Decode(payload []byte, inst db.LarkInstallation) (InboundMessage, bool, error) {
+func (f FrameDecoderFunc) Decode(payload []byte, inst Installation) (InboundMessage, bool, error) {
 	return f(payload, inst)
 }
 
@@ -542,6 +526,10 @@ type GorillaDialer struct {
 	// (e.g. for custom proxy auth or a fixed proxy URL). To disable proxy
 	// entirely, pass a func that returns (nil, nil).
 	Proxy func(*http.Request) (*url.URL, error)
+
+	// ProxyURL is an optional fixed HTTP CONNECT proxy URL for the
+	// WebSocket handshake. When set, it takes precedence over Proxy.
+	ProxyURL string
 }
 
 func NewGorillaDialer() *GorillaDialer {
@@ -559,7 +547,13 @@ func (g *GorillaDialer) DialContext(ctx context.Context, urlStr string, requestH
 	}
 	// Shallow copy so we don't mutate the shared dialer's Proxy field.
 	dd := *d
-	if g.Proxy != nil {
+	if g.ProxyURL != "" {
+		proxyURL, err := url.Parse(g.ProxyURL)
+		if err != nil {
+			return nil, nil, fmt.Errorf("lark ws dialer: parse proxy url %q: %w", g.ProxyURL, err)
+		}
+		dd.Proxy = http.ProxyURL(proxyURL)
+	} else if g.Proxy != nil {
 		dd.Proxy = g.Proxy
 	}
 	if dd.Proxy == nil {

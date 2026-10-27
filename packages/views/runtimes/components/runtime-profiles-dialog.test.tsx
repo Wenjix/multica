@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { RuntimeProfile } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
@@ -11,12 +11,15 @@ const queryState = vi.hoisted(() => ({
   profiles: [] as RuntimeProfile[],
   isLoading: false,
 }));
+const mutationState = vi.hoisted(() => ({
+  createProfile: vi.fn(),
+  updateProfile: vi.fn(),
+}));
 
 vi.mock("@tanstack/react-query", async () => {
-  const actual =
-    await vi.importActual<typeof import("@tanstack/react-query")>(
-      "@tanstack/react-query",
-    );
+  const actual = await vi.importActual<typeof import("@tanstack/react-query")>(
+    "@tanstack/react-query",
+  );
   return {
     ...actual,
     useQuery: vi.fn(() => ({
@@ -28,6 +31,20 @@ vi.mock("@tanstack/react-query", async () => {
 
 vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn() },
+}));
+
+vi.mock("@multica/core/runtimes", () => ({
+  runtimeProfileListOptions: vi.fn((wsId: string) => ({
+    queryKey: ["runtime-profiles", wsId, "list"],
+  })),
+  useCreateRuntimeProfile: vi.fn(() => ({
+    isPending: false,
+    mutateAsync: mutationState.createProfile,
+  })),
+  useUpdateRuntimeProfile: vi.fn(() => ({
+    isPending: false,
+    mutateAsync: mutationState.updateProfile,
+  })),
 }));
 
 vi.mock("./delete-runtime-profile-dialog", () => ({
@@ -60,12 +77,32 @@ function profile(overrides: Partial<RuntimeProfile> = {}): RuntimeProfile {
   };
 }
 
-function renderDialog() {
-  return render(
+function renderDialog({
+  intent,
+  machineName,
+  initialProfile,
+  onClose = vi.fn(),
+  onProfileCreated,
+}: {
+  intent?: "create" | "edit" | "manage";
+  machineName?: string;
+  initialProfile?: RuntimeProfile;
+  onClose?: () => void;
+  onProfileCreated?: (profile: RuntimeProfile) => void;
+} = {}) {
+  const view = render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      <RuntimeProfilesDialog wsId="ws-1" onClose={vi.fn()} />
+      <RuntimeProfilesDialog
+        wsId="ws-1"
+        intent={intent}
+        machineName={machineName}
+        initialProfile={initialProfile}
+        onClose={onClose}
+        onProfileCreated={onProfileCreated}
+      />
     </I18nProvider>,
   );
+  return { ...view, onClose };
 }
 
 describe("RuntimeProfilesDialog", () => {
@@ -73,6 +110,13 @@ describe("RuntimeProfilesDialog", () => {
     queryState.profiles = [];
     queryState.isLoading = false;
     vi.clearAllMocks();
+    mutationState.createProfile.mockResolvedValue(
+      profile({
+        command_name: "agent",
+        fixed_args: ["--model", "composer-2.5"],
+      }),
+    );
+    mutationState.updateProfile.mockResolvedValue(profile());
   });
 
   it("shows the custom empty state and keeps built-in protocols collapsed", () => {
@@ -81,9 +125,7 @@ describe("RuntimeProfilesDialog", () => {
     expect(
       screen.getByText("Create your first custom runtime"),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Pick a base protocol family/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Pick a base protocol family/)).toBeInTheDocument();
 
     const builtinsToggle = screen.getByRole("button", {
       name: /Supported base protocols/,
@@ -92,7 +134,7 @@ describe("RuntimeProfilesDialog", () => {
     expect(screen.queryByText("claude")).not.toBeInTheDocument();
     expect(
       screen.getAllByRole("button", { name: "New custom runtime" }),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 
   it("renders custom profiles before the collapsed built-in reference section", () => {
@@ -140,6 +182,141 @@ describe("RuntimeProfilesDialog", () => {
     expect(screen.getByText("Select a runtime")).toBeInTheDocument();
     expect(
       screen.queryByText(/claude is a built-in protocol family/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("creates an Oh-My-Pi compatibility target without a client protocol mapping", async () => {
+    renderDialog({ intent: "create" });
+    fireEvent.click(screen.getByRole("button", { name: "Oh-My-Pi" }));
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Custom OMP" },
+    });
+    fireEvent.change(screen.getByLabelText("Command"), {
+      target: { value: "wrapper launch" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create runtime" }));
+    await waitFor(() =>
+      expect(mutationState.createProfile).toHaveBeenCalledWith({
+        display_name: "Custom OMP",
+        runtime_type: "omp",
+        command_name: "wrapper",
+        fixed_args: ["launch"],
+      }),
+    );
+  });
+
+  it("creates a custom Devin runtime from the protocol picker", async () => {
+    renderDialog({ intent: "create" });
+    fireEvent.click(screen.getByRole("button", { name: /^devin$/i }));
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Team Devin" },
+    });
+    fireEvent.change(screen.getByLabelText("Command"), {
+      target: { value: "team-devin" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create runtime" }));
+    await waitFor(() =>
+      expect(mutationState.createProfile).toHaveBeenCalledWith({
+        display_name: "Team Devin",
+        runtime_type: "devin",
+        command_name: "team-devin",
+        fixed_args: [],
+      }),
+    );
+  });
+
+  it("parses a pasted command line into fixed_args on create", async () => {
+    renderDialog();
+
+    const newRuntimeButtons = screen.getAllByRole("button", {
+      name: "New custom runtime",
+    });
+    expect(newRuntimeButtons[0]).toBeDefined();
+    fireEvent.click(newRuntimeButtons[0]!);
+    fireEvent.click(screen.getByRole("button", { name: /codex/i }));
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Composer Agent" },
+    });
+    fireEvent.change(screen.getByLabelText("Command"), {
+      target: { value: "agent --model composer-2.5" },
+    });
+
+    expect(screen.getByText("Executable:")).toBeInTheDocument();
+    expect(screen.getByText("agent")).toBeInTheDocument();
+    expect(screen.getByText("--model")).toBeInTheDocument();
+    expect(screen.getByText("composer-2.5")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create runtime" }));
+
+    await waitFor(() =>
+      expect(mutationState.createProfile).toHaveBeenCalledWith({
+        display_name: "Composer Agent",
+        runtime_type: "codex",
+        command_name: "agent",
+        fixed_args: ["--model", "composer-2.5"],
+      }),
+    );
+  });
+
+  it("opens the focused create flow from a machine and closes after creation", async () => {
+    const onClose = vi.fn();
+    const onProfileCreated = vi.fn();
+    renderDialog({
+      intent: "create",
+      machineName: "Studio Mac",
+      onClose,
+      onProfileCreated,
+    });
+
+    expect(
+      screen.getByRole("heading", { name: "New custom runtime" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/from Studio Mac/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "View setup guide" }),
+    ).toHaveAttribute(
+      "href",
+      "https://multica.ai/docs/daemon-runtimes#custom-runtime-profiles",
+    );
+    expect(screen.getByText("Step 1 of 2")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Create your first custom runtime"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Back" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /codex/i }));
+    expect(screen.getByText("Step 2 of 2")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Composer Agent" },
+    });
+    fireEvent.change(screen.getByLabelText("Command"), {
+      target: { value: "agent --model composer-2.5" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create runtime" }));
+
+    await waitFor(() => {
+      expect(onProfileCreated).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "prof-1" }),
+      );
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("opens a custom runtime directly in edit mode", () => {
+    renderDialog({
+      intent: "edit",
+      initialProfile: profile(),
+    });
+
+    expect(
+      screen.getByRole("heading", { name: "Edit custom runtime" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Display name")).toHaveValue("Team Codex");
+    expect(screen.getByLabelText("Command")).toHaveValue("codex");
+    expect(
+      screen.queryByText("Create your first custom runtime"),
     ).not.toBeInTheDocument();
   });
 });
